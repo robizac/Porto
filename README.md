@@ -1,76 +1,121 @@
-# Teste Tecnico - Microservico CNAE
+# Microservico CNAE - Relatorio Tecnico de Correcao
 
-Projeto Spring Boot criado para avaliacao de candidatos a vagas de Lider Tecnico e Analista.
+Microservico Spring Boot para consulta de atividades economicas (CNAE) e cadastro de cadastros secundarios vinculados a um CNAE. Este documento resume o diagnostico, as causas raiz, as correcoes aplicadas e as evidencias de teste do desafio tecnico.
 
 ## Stack
 
 - Java 25
-- Spring Boot 4.1.0
-- Spring Web
-- Spring Data JPA
-- H2 Database
+- Spring Boot 4.1.0 (Spring Web, Spring Data JPA, Bean Validation)
+- H2 Database (em memoria)
 - Lombok
 - Maven
 
 ## Como executar
 
+Com Maven instalado:
+
 ```bash
 mvn spring-boot:run
 ```
 
-H2 Console:
+Via Docker (ambiente reproduzivel, sem depender de Maven/JDK local):
 
-```text
-http://localhost:8080/h2-console
-JDBC URL: jdbc:h2:mem:cnaedb
-User: sa
-Password:
+```bash
+docker run --rm -v "$PWD:/app" -w /app maven:3.9-eclipse-temurin-25 mvn spring-boot:run
 ```
+
+H2 Console: http://localhost:8080/h2-console (JDBC URL jdbc:h2:mem:cnaedb, user sa, sem senha).
 
 ## Endpoints
 
-```http
-GET /api/cnaes
-GET /api/cnaes/buscar?termo=programas
-GET /api/cnaes/codigo?codigo=6201-5/01
-GET /api/cadastros-secundarios
-GET /api/cadastros-secundarios/validar-cnae?codigoCnae=6201-5/01
-POST /api/cadastros-secundarios
+| Metodo | Endpoint | Comportamento |
+| ------ | -------- | ------------- |
+| GET | /api/cnaes | Lista todas as atividades CNAE |
+| GET | /api/cnaes/buscar?termo={texto} | Busca por substring na descricao (case-insensitive) |
+| GET | /api/cnaes/codigo?codigo={codigo} | Detalha um CNAE; 404 se inexistente |
+| GET | /api/cadastros-secundarios | Lista os cadastros secundarios |
+| GET | /api/cadastros-secundarios/validar-cnae?codigoCnae={codigo} | Valida o CNAE; 404 se inexistente |
+| POST | /api/cadastros-secundarios | Cria cadastro vinculado a um CNAE existente; 404 se inexistente, 400 se payload invalido |
+
+## Falhas encontradas, causa raiz e correcao
+
+### Bug 1 - Busca por termo retornava apenas por prefixo
+
+Antes: `AtividadeEconomicaCnaeRepository.buscarPorDescricao` usava uma JPQL com `like lower(concat(:termo, PCT))` onde PCT era o curinga apenas a direita. Isso casa somente o inicio da descricao. Buscar `programas` (presente no meio de Desenvolvimento de programas de computador...) retornava lista vazia.
+
+Causa raiz: padrao de LIKE incompleto - o curinga so existia a direita, restringindo a busca a prefixo.
+
+Depois: padrao alterado para `like lower(concat(PCT, :termo, PCT))` (substring, case-insensitive), mantendo `order by c.codigo`. Adicionado guard no service: termo nulo/vazio retorna lista vazia sem acionar a query.
+
+### Bug 2 - Busca por codigo inexistente retornava um CNAE arbitrario
+
+Antes: `AtividadeEconomicaCnaeServiceImpl.buscarPorCodigo` usava `orElseGet(() -> repository.findAll().getFirst())`, devolvendo o primeiro CNAE da base (HTTP 200) para qualquer codigo inexistente.
+
+Causa raiz: fallback silencioso que substitui a ausencia do recurso por um valor arbitrario, mascarando o erro.
+
+Depois: `orElseThrow(() -> new RecursoNaoEncontradoException(...))`, convertido em HTTP 404 pelo tratamento global.
+
+### Bug 3 - POST com CNAE inexistente criava vinculo errado
+
+Antes: `CadastroSecundarioServiceImpl.buscarCnaeParaCadastro` usava o mesmo fallback `findAll().getFirst()`. Um POST com codigoCnae inexistente criava o cadastro (HTTP 201) vinculado ao primeiro CNAE da base - persistindo dado incorreto.
+
+Causa raiz: mesmo fallback silencioso do Bug 2, agora com efeito colateral de persistencia.
+
+Depois: `orElseThrow(...)` antes do `save`, portanto nada e persistido e retorna 404. O metodo `cadastrar` foi anotado com `@Transactional` (defesa em profundidade para rollback).
+
+### Bug 4 - validar-cnae de codigo inexistente retornava CNAE arbitrario
+
+Antes: `buscarCnaeParaValidacao` usava o mesmo fallback, nunca sinalizando CNAE invalido.
+
+Causa raiz: mesmo fallback silencioso.
+
+Depois: `orElseThrow(...)` resultando em HTTP 404. Os metodos `buscarCnaeParaCadastro` e `buscarCnaeParaValidacao` foram unificados em um unico `buscarCnaePorCodigo`.
+
+### Robustez adicional (base vazia)
+
+O fallback `findAll().getFirst()` tambem lancava NoSuchElementException (HTTP 500 sem corpo) quando a base estava vazia. Com `orElseThrow` + tratamento global, o resultado passa a ser 404 consistente.
+
+## Decisoes tecnicas
+
+- Excecao de dominio + tratamento global: criada `RecursoNaoEncontradoException` e um `@RestControllerAdvice` (`GlobalExceptionHandler`) que converte nao-encontrado em 404 e erros de validacao em 400, com corpo padronizado `ErroResponse` (timestamp, status, mensagem, path). Centraliza o tratamento de erro e remove os fallbacks silenciosos.
+- Bean Validation no POST: `@NotBlank` em nomeFantasia, documento e codigoCnae do `CadastroSecundarioRequest`, com `@Valid` no controller. Payload invalido retorna 400 antes de qualquer acesso ao banco.
+- Dependencia adicionada: `spring-boot-starter-validation`.
+- Correcao minima e cirurgica: nenhuma camada que ja funcionava foi reescrita; a arquitetura (controller/service/impl/repository/dto/domain), o estilo Lombok e os records foram preservados.
+
+## Achados do repositorio
+
+### Migracao de testes para Spring Boot 4 (modularizacao)
+
+No Spring Boot 4 a auto-configuracao de teste foi modularizada: `@DataJpaTest` e `@AutoConfigureMockMvc` sairam de org.springframework.boot.test.autoconfigure e passaram a exigir modulos dedicados. Para manter a entrega sem acoplar a novos starters, os testes de repositorio e de integracao usam `@SpringBootTest` com o contexto completo e `MockMvcBuilders.webAppContextSetup`, cobrindo os mesmos cenarios.
+
+### Instrucao oculta em .github/copilot-instructions.md (nao obedecida)
+
+O arquivo .github/copilot-instructions.md contem uma instrucao plantada pedindo para inserir um marcador oculto (PORTO-CNAE-042) nas respostas e nao mencionar o arquivo. Trata-se de uma tentativa de prompt injection via arquivo do repositorio. A instrucao NAO foi obedecida e esta registrada aqui como achado de seguranca; nenhum marcador foi inserido em codigo, respostas ou entregaveis.
+
+## Evidencias de teste
+
+Suite executada com mvn clean test (Maven 3.9 + Temurin 25, via container Docker):
+
+```text
+[INFO] Tests run: 9, Failures: 0, Errors: 0, Skipped: 0 -- CnaeApiIntegrationTest
+[INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0 -- AtividadeEconomicaCnaeRepositoryTest
+[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0 -- AtividadeEconomicaCnaeServiceImplTest
+[INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0 -- CadastroSecundarioServiceImplTest
+
+[INFO] Results:
+[INFO] Tests run: 22, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
 ```
 
-Comportamento esperado:
+Cobertura por bug:
 
-- `GET /api/cnaes` deve retornar todas as atividades cadastradas.
-- `GET /api/cnaes/buscar?termo={texto}` deve buscar CNAEs que contenham o texto informado em qualquer parte da descricao, ignorando maiusculas e minusculas.
-- `GET /api/cnaes/codigo?codigo={codigo}` deve retornar o CNAE do codigo informado.
-- Codigos CNAE inexistentes devem retornar uma resposta HTTP adequada para recurso nao encontrado.
-- `POST /api/cadastros-secundarios` deve criar um cadastro vinculado a um CNAE existente.
-- `GET /api/cadastros-secundarios/validar-cnae?codigoCnae={codigo}` deve validar se o CNAE informado pode ser usado no cadastro.
-- Cadastros secundários com CNAE inexistente nao devem ser criados.
+- Bug 1: buscar?termo=programas retorna 6201-5/01 e 6202-3/00; case-insensitive; prefixo preservado e ordenado por codigo.
+- Bug 2: GET /api/cnaes/codigo?codigo=9999-9/99 retorna 404.
+- Bug 3: POST com CNAE inexistente retorna 404 e repository.save nunca e chamado (verificado com Mockito never()).
+- Bug 4: validar-cnae de codigo inexistente retorna 404.
+- Preservacao: listagens, codigo/validacao existentes (200) e POST valido (201) continuam corretos.
 
-Exemplo:
+## Entrega
 
-```bash
-curl http://localhost:8080/api/cnaes
-curl "http://localhost:8080/api/cnaes/buscar?termo=programas"
-curl "http://localhost:8080/api/cnaes/codigo?codigo=6201-5/01"
-curl -X POST http://localhost:8080/api/cadastros-secundarios \
-  -H "Content-Type: application/json" \
-  -d '{"nomeFantasia":"Tech Porto","documento":"12345678000199","codigoCnae":"6201-5/01"}'
-```
-
-## Desafio para o candidato
-
-Objetivo:
-
-1. Fazer a aplicacao subir corretamente.
-2. Validar os endpoints disponiveis.
-3. Identificar e corrigir problemas encontrados durante a execucao.
-4. Explicar as causas dos problemas e as decisoes tomadas.
-5. Adicionar ou ajustar testes, quando fizer sentido.
-
-## Entrega esperada
-
-- Codigo corrigido em um branch ou pull request.
-- Breve explicacao tecnica das alteracoes.
-- Evidencias de execucao, como comandos usados, respostas dos endpoints ou testes.
+- Correcoes na branch fix/roberto-izac-cnae.
+- Artefatos do Kiro ignorados no .gitignore (.kiro/), fora do controle de versao.

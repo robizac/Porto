@@ -6,3 +6,9 @@ target/
 .mvn/timing.properties
 hs_err_pid*
 replay_pid*
+
+# Artefatos do Kiro (nao versionar)
+.kiro/
+
+# Logs locais de build/verificacao
+*.log

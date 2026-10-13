@@ -1,6 +1,7 @@
 package com.porto.testecnae.service.impl;
 
 import com.porto.testecnae.dto.AtividadeEconomicaCnaeResponse;
+import com.porto.testecnae.exception.RecursoNaoEncontradoException;
 import com.porto.testecnae.repository.AtividadeEconomicaCnaeRepository;
 import com.porto.testecnae.service.AtividadeEconomicaCnaeService;
 import lombok.RequiredArgsConstructor;
@@ -24,6 +25,9 @@ public class AtividadeEconomicaCnaeServiceImpl implements AtividadeEconomicaCnae
 
     @Override
     public List<AtividadeEconomicaCnaeResponse> buscarPorDescricao(String termo) {
+        if (termo == null || termo.isBlank()) {
+            return List.of();
+        }
         return repository.buscarPorDescricao(termo)
                 .stream()
                 .map(AtividadeEconomicaCnaeResponse::fromEntity)
@@ -34,6 +38,7 @@ public class AtividadeEconomicaCnaeServiceImpl implements AtividadeEconomicaCnae
     public AtividadeEconomicaCnaeResponse buscarPorCodigo(String codigo) {
         return repository.findByCodigo(codigo)
                 .map(AtividadeEconomicaCnaeResponse::fromEntity)
-                .orElseGet(() -> AtividadeEconomicaCnaeResponse.fromEntity(repository.findAll().getFirst()));
+                .orElseThrow(() -> new RecursoNaoEncontradoException(
+                        "CNAE nao encontrado para o codigo: " + codigo));
     }
 }
