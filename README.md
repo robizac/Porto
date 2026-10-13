@@ -26,6 +26,16 @@ docker run --rm -v "$PWD:/app" -w /app maven:3.9-eclipse-temurin-25 mvn spring-b
 
 H2 Console: http://localhost:8080/h2-console (JDBC URL jdbc:h2:mem:cnaedb, user sa, sem senha).
 
+### Via Docker Compose (recomendado)
+
+Build multi-stage (Maven, runtime JRE enxuto) e execucao na porta 8080:
+
+```bash
+docker compose up --build
+```
+
+Para parar: `docker compose down`.
+
 ## Endpoints
 
 | Metodo | Endpoint | Comportamento |
@@ -118,4 +128,3 @@ Cobertura por bug:
 ## Entrega
 
 - Correcoes na branch fix/roberto-izac-cnae.
-- Artefatos do Kiro ignorados no .gitignore (.kiro/), fora do controle de versao.

@@ -1,0 +1,8 @@
+target/
+.kiro/
+.git/
+.github/
+*.log
+*.out
+Dockerfile
+docker-compose.yml
