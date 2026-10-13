@@ -1,9 +1,12 @@
 package com.porto.testecnae.exception;
 
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -20,13 +23,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(RecursoNaoEncontradoException.class)
     public ResponseEntity<ErroResponse> tratarRecursoNaoEncontrado(
             RecursoNaoEncontradoException ex, HttpServletRequest request) {
-        ErroResponse corpo = new ErroResponse(
-                OffsetDateTime.now(),
-                HttpStatus.NOT_FOUND.value(),
-                ex.getMessage(),
-                request.getRequestURI()
-        );
-        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(corpo);
+        return erro(HttpStatus.NOT_FOUND, ex.getMessage(), request);
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -35,12 +32,35 @@ public class GlobalExceptionHandler {
         String mensagem = ex.getBindingResult().getFieldErrors().stream()
                 .map(erro -> erro.getField() + ": " + erro.getDefaultMessage())
                 .collect(Collectors.joining("; "));
+        return erro(HttpStatus.BAD_REQUEST, mensagem, request);
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ErroResponse> tratarCorpoIlegivel(
+            HttpMessageNotReadableException ex, HttpServletRequest request) {
+        return erro(HttpStatus.BAD_REQUEST, "Corpo da requisicao invalido ou malformado", request);
+    }
+
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ResponseEntity<ErroResponse> tratarParametroAusente(
+            MissingServletRequestParameterException ex, HttpServletRequest request) {
+        return erro(HttpStatus.BAD_REQUEST,
+                "Parametro obrigatorio ausente: " + ex.getParameterName(), request);
+    }
+
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ErroResponse> tratarIntegridade(
+            DataIntegrityViolationException ex, HttpServletRequest request) {
+        return erro(HttpStatus.BAD_REQUEST, "Dados invalidos para persistencia", request);
+    }
+
+    private ResponseEntity<ErroResponse> erro(HttpStatus status, String mensagem, HttpServletRequest request) {
         ErroResponse corpo = new ErroResponse(
                 OffsetDateTime.now(),
-                HttpStatus.BAD_REQUEST.value(),
+                status.value(),
                 mensagem,
                 request.getRequestURI()
         );
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(corpo);
+        return ResponseEntity.status(status).body(corpo);
     }
 }

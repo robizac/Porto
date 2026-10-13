@@ -94,10 +94,20 @@ Depois: `orElseThrow(...)` resultando em HTTP 404. Os metodos `buscarCnaeParaCad
 
 O fallback `findAll().getFirst()` tambem lancava NoSuchElementException (HTTP 500 sem corpo) quando a base estava vazia. Com `orElseThrow` + tratamento global, o resultado passa a ser 404 consistente.
 
+### Bug 5 - Payload acima do limite das colunas causava HTTP 500
+
+Antes: `POST /api/cadastros-secundarios` com `documento` acima de 14 caracteres (coluna `varchar(14)`) ou `nomeFantasia` acima de 120 (coluna `varchar(120)`) passava pelo `@NotBlank` e chegava ao banco, disparando `org.springframework.dao.DataIntegrityViolationException` (H2 SQLState 22001, "Value too long for column"). O erro nao era tratado e a API respondia HTTP 500 (erro de servidor) em vez de 400, com corpo de erro padrao do Spring (nao o `ErroResponse`).
+
+Causa raiz: validacao de payload apenas de presenca (`@NotBlank`), sem limite de tamanho alinhado ao schema, e ausencia de tratamento global para violacoes de integridade.
+
+Depois: adicionados `@Size(max = 14)` em `documento` e `@Size(max = 120)` em `nomeFantasia` no `CadastroSecundarioRequest`; payload fora do limite retorna 400 pelo `GlobalExceptionHandler` antes de qualquer acesso ao banco. Defesa em profundidade: o `GlobalExceptionHandler` tambem converte `DataIntegrityViolationException` (400), corpo malformado (`HttpMessageNotReadableException`, 400) e parametro obrigatorio ausente (`MissingServletRequestParameterException`, 400) no mesmo corpo `ErroResponse`.
+
+Evidencia: `CnaeApiEdgeCaseIntegrationTest` cobre `documento`/`nomeFantasia` acima do limite -> 400 com `status` e `mensagem`.
+
 ## Decisoes tecnicas
 
 - Excecao de dominio + tratamento global: criada `RecursoNaoEncontradoException` e um `@RestControllerAdvice` (`GlobalExceptionHandler`) que converte nao-encontrado em 404 e erros de validacao em 400, com corpo padronizado `ErroResponse` (timestamp, status, mensagem, path). Centraliza o tratamento de erro e remove os fallbacks silenciosos.
-- Bean Validation no POST: `@NotBlank` em nomeFantasia, documento e codigoCnae do `CadastroSecundarioRequest`, com `@Valid` no controller. Payload invalido retorna 400 antes de qualquer acesso ao banco.
+- Bean Validation no POST: `@NotBlank` em nomeFantasia, documento e codigoCnae do `CadastroSecundarioRequest`, com `@Valid` no controller. Alem disso, `@Size` limita `nomeFantasia` (120) e `documento` (14) ao schema, evitando erro de integridade no banco. Payload invalido retorna 400 antes de qualquer acesso ao banco.
 - Dependencia adicionada: `spring-boot-starter-validation`.
 - Correcao minima e cirurgica: nenhuma camada que ja funcionava foi reescrita; a arquitetura (controller/service/impl/repository/dto/domain), o estilo Lombok e os records foram preservados.
 
@@ -121,12 +131,13 @@ Suite executada com mvn clean test (Maven 3.9 + Temurin 25, via container Docker
 
 ```text
 [INFO] Tests run: 9, Failures: 0, Errors: 0, Skipped: 0 -- CnaeApiIntegrationTest
+[INFO] Tests run: 7, Failures: 0, Errors: 0, Skipped: 0 -- CnaeApiEdgeCaseIntegrationTest
 [INFO] Tests run: 5, Failures: 0, Errors: 0, Skipped: 0 -- AtividadeEconomicaCnaeRepositoryTest
 [INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0 -- AtividadeEconomicaCnaeServiceImplTest
 [INFO] Tests run: 4, Failures: 0, Errors: 0, Skipped: 0 -- CadastroSecundarioServiceImplTest
 
 [INFO] Results:
-[INFO] Tests run: 22, Failures: 0, Errors: 0, Skipped: 0
+[INFO] Tests run: 29, Failures: 0, Errors: 0, Skipped: 0
 [INFO] BUILD SUCCESS
 ```
 
@@ -136,6 +147,9 @@ Cobertura por bug:
 - Bug 2: GET /api/cnaes/codigo?codigo=9999-9/99 retorna 404.
 - Bug 3: POST com CNAE inexistente retorna 404 e repository.save nunca e chamado (verificado com Mockito never()).
 - Bug 4: validar-cnae de codigo inexistente retorna 404.
+- Bug 5: POST com documento acima de 14 ou nomeFantasia acima de 120 retorna 400 (nao 500), com corpo `ErroResponse`.
+- Edge: base vazia em codigo/validar-cnae/POST -> 404 consistente (nao 500), e nenhum cadastro persistido.
+- Robustez de erro: corpo malformado e parametro obrigatorio ausente -> 400 com corpo padronizado.
 - Preservacao: listagens, codigo/validacao existentes (200) e POST valido (201) continuam corretos.
 
 ## Entrega
